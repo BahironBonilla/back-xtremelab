@@ -1,81 +1,57 @@
-from fastapi import FastAPI, HTTPException
+import os
+from flask import Flask, request, jsonify
 import boto3
-import psycopg2
+from botocore.exceptions import NoCredentialsError
+from flask import Flask
+from flask_cors import CORS
 
-# Configura la conexión a S3
-s3 = boto3.client(
-    's3',
-    aws_access_key_id='https://749429957265.signin.aws.amazon.com/console',
-    aws_secret_access_key='14-de-Octubre',
-    region_name='us-east-2'
-)
+app = Flask(__name__)
+CORS(app)
 
-# Configura la conexión a RDS
-db_connection = psycopg2.connect(
-    host='basededatoslabsebastian.clmeb76jyzoh.us-east-2.rds.amazonaws.com',
-    database='basededatoslabsebastian',
-    user='postgresql',
-    password='12345'
-)
+app = Flask(__name__)
 
-app = FastAPI()
+# Configura las credenciales de AWS
+AWS_ACCESS_KEY_ID = 'AKIA247MBUKIV45MHGGS'
+AWS_SECRET_ACCESS_KEY = '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'
+S3_BUCKET_NAME = 'bukcketlabsebastian'
 
-# Definir una tabla para almacenar la información sobre los objetos de S3 en RDS
-with db_connection.cursor() as cur:
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS s3_objects (
-            id SERIAL PRIMARY KEY,
-            object_key VARCHAR,
-            object_description VARCHAR
-        )
-        """
-    )
-    db_connection.commit()
+s3 = boto3.client('s3', aws_access_key_id=AWS_ACCESS_KEY_ID, aws_secret_access_key=AWS_SECRET_ACCESS_KEY)
 
-@app.post("/upload/{object_key}/{object_description}")
-def upload_to_s3(object_key: str, object_description: str):
-    # Subir el objeto a S3
+# Ruta para subir un archivo a S3
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    
+    if request.method == 'POST':
+        file = request.files['file']
+        if file:
+            try:
+                data = open(file, 'rb')
+                s3.Bucket(S3_BUCKET_NAME).put_object(Key=file, Body=data)
+                #s3.upload_fileobj(file, S3_BUCKET_NAME, file.filename)
+                return jsonify({"message": "Archivo subido exitosamente"})
+            except NoCredentialsError:
+                return jsonify({"error": "Credenciales de AWS no válidas"})
+        else:
+            return jsonify({"error": "No se proporcionó ningún archivo en la solicitud"})
+
+# Ruta para listar todos los archivos en S3
+@app.route('/list', methods=['GET'])
+def list_files():
     try:
-        s3.upload_fileobj(
-            open(object_key, 'rb'),
-            'bukcketlabsebastian',
-            object_key
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        objects = s3.list_objects_v2(Bucket=S3_BUCKET_NAME)
+        file_list = [obj['Key'] for obj in objects.get('Contents', [])]
+        return jsonify({"files": file_list})
+    except NoCredentialsError:
+        return jsonify({"error": "Credenciales de AWS no válidas"})
 
-    # Registrar la información del objeto en la base de datos
-    with db_connection.cursor() as cur:
-        cur.execute(
-            "INSERT INTO s3_objects (object_key, object_description) VALUES (%s, %s)",
-            (object_key, object_description)
-        )
-        db_connection.commit()
-
-    return {"message": "Objeto subido correctamente"}
-
-@app.get("/download/{object_key}")
-def download_from_s3(object_key: str):
-    # Descargar el objeto desde S3
+# Ruta para eliminar un archivo de S3
+@app.route('/delete/<file_name>', methods=['DELETE'])
+def delete_file(file_name):
     try:
-        s3.download_file('arn:aws:s3:::bukcketlabsebastian ', object_key, object_key)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        s3.delete_object(Bucket=S3_BUCKET_NAME, Key=file_name)
+        return jsonify({"message": f"Archivo '{file_name}' eliminado exitosamente"})
+    except NoCredentialsError:
+        return jsonify({"error": "Credenciales de AWS no válidas"})
 
-    # Obtener la descripción del objeto desde la base de datos
-    with db_connection.cursor() as cur:
-        cur.execute(
-            "SELECT object_description FROM s3_objects WHERE object_key = %s",
-            (object_key,)
-        )
-        description = cur.fetchone()
-
-    if description:
-        return {"object_description": description[0]}
-
-    raise HTTPException(status_code=404, detail="Objeto no encontrado")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+if __name__ == '__main__':
+    app.run(debug=True)
